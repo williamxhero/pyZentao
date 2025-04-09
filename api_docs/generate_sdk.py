@@ -164,7 +164,6 @@ def generate_model_code(name: str, schema: Dict[str, Any], schemas: Dict[str, An
         f"{name} 数据模型",
         '"""',
         "from dataclasses import dataclass",
-        # imports 占位，稍后插入
         "__IMPORT_PLACEHOLDER__",
         "from .base import BaseModel",
         "",
@@ -176,72 +175,87 @@ def generate_model_code(name: str, schema: Dict[str, Any], schemas: Dict[str, An
     if not props:
         lines.append("    pass")
     else:
+        # 先分组字段
+        required_props = []
+        optional_props = []
         for prop, info in props.items():
-            typ = "Any"
-            if "$ref" in info:
-                ref_name = info["$ref"].split("/")[-1]
-                typ = ref_name
-                # 递归生成引用的模型
-                if ref_name not in model_names and ref_name in schemas:
-                    nested_code = generate_model_code(ref_name, schemas[ref_name], schemas, model_names)
-                    with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{ref_name.lower()}.py", "w", encoding="utf-8") as f:
-                        f.write(nested_code)
+            if prop in required:
+                required_props.append((prop, info))
             else:
-                t = info.get("type", "string")
-                if t == "string":
-                    typ = "str"
-                elif t == "integer":
-                    typ = "int"
-                elif t == "boolean":
-                    typ = "bool"
-                elif t == "number":
-                    typ = "float"
-                elif t == "array":
-                    items = info.get("items", {})
-                    if "$ref" in items:
-                        item_ref = items["$ref"].split("/")[-1]
-                        typ = f"List[{item_ref}]"
-                        used_typing.add("List")
-                        # 递归生成
-                        if item_ref not in model_names and item_ref in schemas:
-                            nested_code = generate_model_code(item_ref, schemas[item_ref], schemas, model_names)
-                            with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{item_ref.lower()}.py", "w", encoding="utf-8") as f:
-                                f.write(nested_code)
-                    else:
-                        item_type = items.get("type", "Any")
-                        if item_type == "string":
-                            typ = "List[str]"
-                        elif item_type == "integer":
-                            typ = "List[int]"
-                        elif item_type == "boolean":
-                            typ = "List[bool]"
-                        elif item_type == "number":
-                            typ = "List[float]"
-                        else:
-                            typ = "List[Any]"
-                        used_typing.add("List")
+                optional_props.append((prop, info))
+
+        def process_props(prop_list, is_optional: bool):
+            nonlocal used_typing, used_datetime
+            for prop, info in prop_list:
+                typ = "Any"
+                if "$ref" in info:
+                    ref_name = info["$ref"].split("/")[-1]
+                    typ = ref_name
+                    # 递归生成引用的模型
+                    if ref_name not in model_names and ref_name in schemas:
+                        nested_code = generate_model_code(ref_name, schemas[ref_name], schemas, model_names)
+                        with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{ref_name.lower()}.py", "w", encoding="utf-8") as f:
+                            f.write(nested_code)
                 else:
-                    typ = "Any"
+                    t = info.get("type", "string")
+                    if t == "string":
+                        typ = "str"
+                    elif t == "integer":
+                        typ = "int"
+                    elif t == "boolean":
+                        typ = "bool"
+                    elif t == "number":
+                        typ = "float"
+                    elif t == "array":
+                        items = info.get("items", {})
+                        if "$ref" in items:
+                            item_ref = items["$ref"].split("/")[-1]
+                            typ = f"List[{item_ref}]"
+                            used_typing.add("List")
+                            # 递归生成
+                            if item_ref not in model_names and item_ref in schemas:
+                                nested_code = generate_model_code(item_ref, schemas[item_ref], schemas, model_names)
+                                with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{item_ref.lower()}.py", "w", encoding="utf-8") as f:
+                                    f.write(nested_code)
+                        else:
+                            item_type = items.get("type", "Any")
+                            if item_type == "string":
+                                typ = "List[str]"
+                            elif item_type == "integer":
+                                typ = "List[int]"
+                            elif item_type == "boolean":
+                                typ = "List[bool]"
+                            elif item_type == "number":
+                                typ = "List[float]"
+                            else:
+                                typ = "List[Any]"
+                            used_typing.add("List")
+                    else:
+                        typ = "Any"
 
-            optional = prop not in required
-            if optional:
-                typ = f"Optional[{typ}]"
-                used_typing.add("Optional")
+                if is_optional:
+                    typ = f"Optional[{typ}]"
+                    used_typing.add("Optional")
 
-            # 统计类型
-            if "List" in typ:
-                used_typing.add("List")
-            if "Dict" in typ:
-                used_typing.add("Dict")
-            if "Any" in typ:
-                used_typing.add("Any")
-            if "datetime" in typ:
-                used_datetime.add("datetime")
-            if "date" in typ:
-                used_datetime.add("date")
+                # 统计类型
+                if "List" in typ:
+                    used_typing.add("List")
+                if "Dict" in typ:
+                    used_typing.add("Dict")
+                if "Any" in typ:
+                    used_typing.add("Any")
+                if "datetime" in typ:
+                    used_datetime.add("datetime")
+                if "date" in typ:
+                    used_datetime.add("date")
 
-            default = " = None" if optional else ""
-            lines.append(f"    {prop}: {typ}{default}")
+                default = " = None" if is_optional else ""
+                lines.append(f"    {prop}: {typ}{default}")
+
+        # 先输出无默认值字段
+        process_props(required_props, is_optional=False)
+        # 再输出有默认值字段
+        process_props(optional_props, is_optional=True)
 
     # 生成 imports
     import_lines = []
@@ -258,6 +272,7 @@ def generate_model_code(name: str, schema: Dict[str, Any], schemas: Dict[str, An
 
 def generate_api_class_code(class_name: str, endpoints: List):
     model_imports = set()
+    typing_imports = set()
 
     lines = [
         '"""',
@@ -313,6 +328,12 @@ def generate_api_class_code(class_name: str, endpoints: List):
             else:
                 params.append(f"{pname}: Optional[{ptype}]{default}")
                 param_lines.append(f"{indent3}{pname}: {param.get('description', '')}")
+                typing_imports.add("Optional")
+
+            if not prequired:
+                typing_imports.add("Optional")
+            if ptype == "Any":
+                typing_imports.add("Any")
 
         # 请求体参数
         has_body = False
@@ -321,9 +342,9 @@ def generate_api_class_code(class_name: str, endpoints: List):
         if "application/json" in content:
             has_body = True
             schema = content["application/json"].get("schema", {})
-            # 这里简单处理，复杂结构可扩展
             params.append("body: Optional[Dict[str, Any]] = None")
             param_lines.append(f"{indent3}body: 请求体参数")
+            typing_imports.update(["Optional", "Dict", "Any"])
 
         # 推断返回类型
         responses = meta.get("responses", {})
@@ -336,6 +357,11 @@ def generate_api_class_code(class_name: str, endpoints: List):
                 if "$ref" in schema:
                     return_type = schema["$ref"].split("/")[-1]
                     model_imports.add(return_type)
+                else:
+                    return_type = "Any"
+                    typing_imports.add("Any")
+        else:
+            typing_imports.add("Any")
 
         param_str = ", ".join(params)
         lines.append(f"{indent1}async def {func_name}(self, {param_str}) -> {return_type}:")
@@ -365,7 +391,12 @@ def generate_api_class_code(class_name: str, endpoints: List):
             lines.append(f"{indent3}body=None")
         lines.append(f"{indent2})\n")
 
-    # 在顶部添加只import用到的模型
+    # 在顶部添加 typing imports
+    if typing_imports:
+        import_line = "from typing import " + ", ".join(sorted(typing_imports))
+        lines.insert(4, import_line)
+
+    # 在顶部添加模型 imports
     if model_imports:
         import_line = "from ..models import " + ", ".join(sorted(model_imports))
         lines.insert(4, import_line)

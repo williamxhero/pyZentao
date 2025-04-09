@@ -48,7 +48,7 @@ pyZentao 是一个面向禅道项目管理系统的 **Python SDK**，支持通�
 ## 三、代码生成机制
 
 - **核心思想**：  
-  通过用户提供的 `zentao_api_docs.yaml` ，描述禅道的API接口和数据结构。
+  通过用户提供的 `zentao_api_docs.yaml` ，描述禅道的API接口和数据结构。这个文件来源于工具 https://github.com/williamxhero/zentao_api_doc.git
 
 - **生成流程**：  
   运行命令：
@@ -102,6 +102,7 @@ response = await client.tokens.tokens(account=username, password=password)
 await client.close()
 ```
 
+本地zentao URL: http://192.168.0.72/zentao, 用户名：the_account，密码：the_password
 ---
 
 ## 五、示例代码说明 (`zentao_api/examples/all_opens.py`)
@@ -133,8 +134,10 @@ await client.close()
 ## 七、注意事项
 
 - **禁止直接修改**：
-  - `zentao_api/core/api/` 和 `zentao_api/core/models/` 下的代码
-  - 应通过修改 `api_docs/zentao_api_docs.yaml` 和生成工具来调整
+  - `zentao_api/core/api/` 和 `zentao_api/core/models/` 下的代码，
+    - 应通过修改生成工具来调整
+  - `api_docs/zentao_api_docs.yaml` 
+    - 应联系用户重新提供
 - **API描述文件**：
   - 由用户根据禅道版本提供
   - 格式支持yaml/json
