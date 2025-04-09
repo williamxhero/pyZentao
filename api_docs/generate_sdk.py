@@ -4,9 +4,9 @@
 根据 OpenAPI 规范的 YAML 文件自动生成禅道 Python SDK
 
 - 解析 api_docs/zentao_api_docs.yaml
-- 生成 core/models 下的 Pydantic 风格数据模型
+- 生成 core/models 下的 dataclass 风格数据模型
 - 生成 core/api 下的 API 分组类
-- 生成 BaseAPI 和 ZentaoModel 基类
+- 生成 BaseAPI 和 BaseModel 基类
 """
 
 import yaml
@@ -51,11 +51,11 @@ def main():
     print("生成 models/__init__.py ...")
     with open(models_dir / "__init__.py", "w", encoding="utf-8") as f:
         f.write('"""\n自动生成的禅道API数据模型\n"""\n')
-        f.write('from .base import ZentaoModel\n')
+        f.write('from .base import BaseModel\n')
         for name in sorted(model_names):
             f.write(f"from .{name.lower()} import {name}\n")
         f.write("\n__all__ = [\n")
-        f.write("    'ZentaoModel',\n")
+        f.write("    'BaseModel',\n")
         for name in sorted(model_names):
             f.write(f"    '{name}',\n")
         f.write("]\n")
@@ -99,21 +99,21 @@ def main():
 
 def generate_base_model(models_dir: Path):
     code = '''"""
-ZentaoModel 基类
+BaseModel 基类
 """
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Dict, Any, List, Optional
 from datetime import datetime, date
 
 @dataclass
-class ZentaoModel:
+class BaseModel:
     """禅道API数据模型基类，支持序列化和反序列化"""
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ZentaoModel':
+    def from_dict(cls, data: Dict[str, Any]) -> 'BaseModel':
         return cls(**data)
 '''
     with open(models_dir / "base.py", "w", encoding="utf-8") as f:
@@ -156,72 +156,103 @@ def generate_model_code(name: str, schema: Dict[str, Any], schemas: Dict[str, An
     required = schema.get("required", [])
     props = schema.get("properties", {})
 
+    used_typing: Set[str] = set()
+    used_datetime: Set[str] = set()
+
     lines = [
         '"""',
         f"{name} 数据模型",
         '"""',
-        "from dataclasses import dataclass, field",
-        "from typing import Optional, List, Dict, Any",
-        "from datetime import datetime, date",
-        "from .base import ZentaoModel",
+        "from dataclasses import dataclass",
+        # imports 占位，稍后插入
+        "__IMPORT_PLACEHOLDER__",
+        "from .base import BaseModel",
         "",
         "@dataclass",
-        f"class {name}(ZentaoModel):",
+        f"class {name}(BaseModel):",
         f'    """{name}"""'
     ]
 
     if not props:
         lines.append("    pass")
-        return "\n".join(lines)
-
-    for prop, info in props.items():
-        typ = "Any"
-        if "$ref" in info:
-            ref_name = info["$ref"].split("/")[-1]
-            typ = ref_name
-            # 递归生成引用的模型
-            if ref_name not in model_names and ref_name in schemas:
-                nested_code = generate_model_code(ref_name, schemas[ref_name], schemas, model_names)
-                with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{ref_name.lower()}.py", "w", encoding="utf-8") as f:
-                    f.write(nested_code)
-        else:
-            t = info.get("type", "string")
-            if t == "string":
-                typ = "str"
-            elif t == "integer":
-                typ = "int"
-            elif t == "boolean":
-                typ = "bool"
-            elif t == "number":
-                typ = "float"
-            elif t == "array":
-                items = info.get("items", {})
-                if "$ref" in items:
-                    item_ref = items["$ref"].split("/")[-1]
-                    typ = f"List[{item_ref}]"
-                    # 递归生成
-                    if item_ref not in model_names and item_ref in schemas:
-                        nested_code = generate_model_code(item_ref, schemas[item_ref], schemas, model_names)
-                        with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{item_ref.lower()}.py", "w", encoding="utf-8") as f:
-                            f.write(nested_code)
-                else:
-                    item_type = items.get("type", "Any")
-                    if item_type == "string":
-                        typ = "List[str]"
-                    elif item_type == "integer":
-                        typ = "List[int]"
-                    elif item_type == "boolean":
-                        typ = "List[bool]"
-                    elif item_type == "number":
-                        typ = "List[float]"
-                    else:
-                        typ = "List[Any]"
+    else:
+        for prop, info in props.items():
+            typ = "Any"
+            if "$ref" in info:
+                ref_name = info["$ref"].split("/")[-1]
+                typ = ref_name
+                # 递归生成引用的模型
+                if ref_name not in model_names and ref_name in schemas:
+                    nested_code = generate_model_code(ref_name, schemas[ref_name], schemas, model_names)
+                    with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{ref_name.lower()}.py", "w", encoding="utf-8") as f:
+                        f.write(nested_code)
             else:
-                typ = "Any"
+                t = info.get("type", "string")
+                if t == "string":
+                    typ = "str"
+                elif t == "integer":
+                    typ = "int"
+                elif t == "boolean":
+                    typ = "bool"
+                elif t == "number":
+                    typ = "float"
+                elif t == "array":
+                    items = info.get("items", {})
+                    if "$ref" in items:
+                        item_ref = items["$ref"].split("/")[-1]
+                        typ = f"List[{item_ref}]"
+                        used_typing.add("List")
+                        # 递归生成
+                        if item_ref not in model_names and item_ref in schemas:
+                            nested_code = generate_model_code(item_ref, schemas[item_ref], schemas, model_names)
+                            with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{item_ref.lower()}.py", "w", encoding="utf-8") as f:
+                                f.write(nested_code)
+                    else:
+                        item_type = items.get("type", "Any")
+                        if item_type == "string":
+                            typ = "List[str]"
+                        elif item_type == "integer":
+                            typ = "List[int]"
+                        elif item_type == "boolean":
+                            typ = "List[bool]"
+                        elif item_type == "number":
+                            typ = "List[float]"
+                        else:
+                            typ = "List[Any]"
+                        used_typing.add("List")
+                else:
+                    typ = "Any"
 
-        optional = prop not in required
-        default = " = None" if optional else ""
-        lines.append(f"    {prop}: Optional[{typ}]{default}")
+            optional = prop not in required
+            if optional:
+                typ = f"Optional[{typ}]"
+                used_typing.add("Optional")
+
+            # 统计类型
+            if "List" in typ:
+                used_typing.add("List")
+            if "Dict" in typ:
+                used_typing.add("Dict")
+            if "Any" in typ:
+                used_typing.add("Any")
+            if "datetime" in typ:
+                used_datetime.add("datetime")
+            if "date" in typ:
+                used_datetime.add("date")
+
+            default = " = None" if optional else ""
+            lines.append(f"    {prop}: {typ}{default}")
+
+    # 生成 imports
+    import_lines = []
+    if used_typing:
+        import_lines.append(f"from typing import {', '.join(sorted(used_typing))}")
+    if used_datetime:
+        import_lines.append(f"from datetime import {', '.join(sorted(used_datetime))}")
+
+    # 替换占位符
+    import_block = "\n".join(import_lines)
+    lines = [line if line != "__IMPORT_PLACEHOLDER__" else import_block for line in lines]
 
     return "\n".join(lines)
 
@@ -317,8 +348,8 @@ def generate_api_class_code(class_name: str, endpoints: List):
         lines.append(f"{indent3}{return_type} 响应模型")
         lines.append(f'{indent2}"""')
         lines.append(f"{indent2}return await self._request(")
-        lines.append(f'{indent3}method="{method}",')
-        lines.append(f'{indent3}path=f"{path}",')
+        lines.append(f'{indent3}method=\"{method}\",')
+        lines.append(f'{indent3}path=f\"{path}\",')
         # 生成path_params字典
         if path_params_list:
             lines.append(f"{indent3}path_params={{")
