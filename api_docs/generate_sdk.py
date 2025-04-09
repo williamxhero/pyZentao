@@ -1,147 +1,21 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """
-生成禅道 API SDK
+根据 OpenAPI 规范的 YAML 文件自动生成禅道 Python SDK
 
-此脚本用于根据 API 文档生成禅道 SDK 代码。
+- 解析 api_docs/zentao_api_docs.yaml
+- 生成 core/models 下的 Pydantic 风格数据模型
+- 生成 core/api 下的 API 分组类
+- 生成 BaseAPI 和 ZentaoModel 基类
 """
-import json
-import os
+
+import yaml
 from pathlib import Path
 from typing import Dict, Any, List, Set, Optional
 
-def generate_model_class(model_name: str, fields: List[Dict[str, Any]], model_classes: Set[str], nested_models: Optional[List[str]] = None) -> str:
-    """生成模型类代码"""
-    if nested_models is None:
-        nested_models = []
-
-    field_defs = []
-    field_docs = []
-    enum_defs = []
-
-    for field in fields:
-        if not isinstance(field, dict):
-            continue
-
-        field_name = field.get('name', '')
-        field_type = field.get('type', 'str').lower()
-        field_desc = field.get('description', '')
-        required = field.get('required', False)
-        enum_values = field.get('enum', [])
-
-        # 处理枚举类型
-        if enum_values and isinstance(enum_values, list):
-            enum_name = f"{model_name}{field_name.capitalize()}Enum"
-            enum_def = f'''class {enum_name}(str):
-    """
-    {field_desc}
-    """
-'''
-            for value in enum_values:
-                enum_value = str(value).upper().replace(' ', '_').replace('-', '_')
-                enum_def += f'    {enum_value} = "{value}"\n'
-
-            enum_defs.append(enum_def)
-            field_type = enum_name
-
-        # 处理嵌套对象
-        elif field_type == 'object' and 'properties' in field:
-            nested_model_name = f"{model_name}{field_name.capitalize()}"
-            model_classes.add(nested_model_name)
-            nested_code = generate_model_class(nested_model_name, field['properties'], model_classes, nested_models)
-            nested_models.append(nested_code)
-            field_type = nested_model_name
-
-        # 处理数组类型
-        elif field_type == 'array' and 'items' in field:
-            items = field['items']
-            if isinstance(items, dict):
-                if items.get('type') == 'object' and 'properties' in items:
-                    nested_model_name = f"{model_name}{field_name.capitalize()}Item"
-                    model_classes.add(nested_model_name)
-                    nested_code = generate_model_class(nested_model_name, items['properties'], model_classes, nested_models)
-                    nested_models.append(nested_code)
-                    field_type = f"List[{nested_model_name}]"
-                else:
-                    item_type = items.get('type', 'Any')
-                    field_type = f"List[{item_type}]"
-            else:
-                field_type = "List[Any]"
-
-        # 处理复合类型（如 integer/string）
-        else:
-            if '/' in field_type:
-                sub_types = []
-                for t in field_type.split('/'):
-                    t = t.strip()
-                    if t == 'string':
-                        sub_types.append('str')
-                    elif t == 'integer':
-                        sub_types.append('int')
-                    elif t == 'boolean':
-                        sub_types.append('bool')
-                    elif t == 'datetime':
-                        sub_types.append('datetime')
-                    elif t == 'date':
-                        sub_types.append('date')
-                    elif t == 'float':
-                        sub_types.append('float')
-                    elif t == '':
-                        sub_types.append('str')
-                    elif t == 'array':
-                        sub_types.append('List[Any]')
-                    else:
-                        sub_types.append(t)
-                field_type = f"Union[{', '.join(sub_types)}]"
-            else:
-                field_type = 'str' if field_type == 'string' else field_type
-                field_type = 'int' if field_type == 'integer' else field_type
-                field_type = 'bool' if field_type == 'boolean' else field_type
-                field_type = 'datetime' if field_type == 'datetime' else field_type
-                field_type = 'date' if field_type == 'date' else field_type
-                field_type = 'float' if field_type == 'float' else field_type
-                field_type = 'str' if field_type == '' else field_type
-                field_type = 'List[Any]' if field_type == 'array' else field_type
-
-        # 添加字段定义
-        if required:
-            field_defs.append(f"    {field_name}: {field_type}")
-        else:
-            field_defs.append(f"    {field_name}: Optional[{field_type}] = None")
-
-        # 添加字段文档
-        field_docs.append(f"        {field_name}: {field_desc}")
-
-    # 生成当前模型代码
-    model_code = f'''"""
-Generated model class for {model_name}
-"""
-from typing import List, Optional, Any, Union
-from datetime import datetime, date
-from enum import Enum
-from .base import ZentaoModel
-
-{chr(10).join(enum_defs)}
-
-class {model_name}(ZentaoModel):
-    """{model_name} 模型
-    
-    Attributes:
-{chr(10).join(field_docs)}
-    """
-{chr(10).join(field_defs)}
-'''
-
-    # 拼接所有嵌套模型代码 + 当前模型代码
-    full_code = ''
-    for nested in nested_models:
-        full_code += nested + '\n\n'
-    full_code += model_code
-
-    return full_code
-
 def main():
     project_root = Path(__file__).parent.parent
-    api_docs_file = project_root / "api_docs" / "zentao_api_docs.json"
+    yaml_file = project_root / "api_docs" / "zentao_api_docs.yaml"
     sdk_dir = project_root / "zentao_api"
     core_dir = sdk_dir / "core"
     api_dir = core_dir / "api"
@@ -152,105 +26,120 @@ def main():
     api_dir.mkdir(exist_ok=True)
     models_dir.mkdir(exist_ok=True)
 
-    with open(api_docs_file, 'r', encoding='utf-8') as f:
-        api_docs = json.load(f)
+    print("加载 OpenAPI 规范文档...")
+    with open(yaml_file, "r", encoding="utf-8") as f:
+        spec = yaml.safe_load(f)
 
-    # 生成基础文件
-    generate_base_files(core_dir)
+    schemas = spec.get("components", {}).get("schemas", {})
+    paths = spec.get("paths", {})
 
-    # 生成模型文件
-    model_classes = set()
-    for group_name, methods in api_docs.get('groups', {}).items():
-        for method in methods:
-            if 'response_params' in method:
-                response_params = method['response_params']
-                if isinstance(response_params, list):
-                    nested_models = []
-                    model_name = f"{method['path'].strip('/').replace('/', '_').capitalize()}Response"
-                    model_classes.add(model_name)
-                    model_code = generate_model_class(model_name, response_params, model_classes, nested_models)
-                    with open(models_dir / f"{model_name.lower()}.py", 'w', encoding='utf-8') as f:
-                        f.write(model_code)
+    print(f"发现 {len(schemas)} 个数据模型定义，开始生成模型代码...")
+    # 生成基类
+    generate_base_model(models_dir)
+    generate_base_api(api_dir)
+    print("基础模型和基础API类生成完成。")
 
-    # 生成 __init__.py
-    with open(models_dir / "__init__.py", 'w', encoding='utf-8') as f:
-        f.write('"""\nGenerated models for ZenTao API\n"""\n')
-        f.write('from typing import List, Optional, Any\n')
-        f.write('from datetime import datetime, date\n')
-        f.write('from .base import ZentaoModel\n\n')
-        f.write('__all__ = []\n')
-        for model_class in sorted(model_classes):
-            f.write(f'from .{model_class.lower()} import {model_class}\n')
-        f.write('\n__all__ = [\n')
-        for model_class in sorted(model_classes):
-            f.write(f"    '{model_class}',\n")
-        f.write(']\n')
+    # 生成模型
+    model_names = set()
+    for schema_name, schema_obj in schemas.items():
+        print(f"生成模型: {schema_name}")
+        code = generate_model_code(schema_name, schema_obj, schemas, model_names)
+        with open(models_dir / f"{schema_name.lower()}.py", "w", encoding="utf-8") as f:
+            f.write(code)
 
-    # 生成 API 类文件
-    for group_name, methods in api_docs.get('groups', {}).items():
-        if group_name:
-            api_code = generate_api_class(group_name, methods, model_classes)
-            with open(api_dir / f"{group_name.lower()}.py", 'w', encoding='utf-8') as f:
-                f.write(api_code)
+    # 生成 models/__init__.py
+    print("生成 models/__init__.py ...")
+    with open(models_dir / "__init__.py", "w", encoding="utf-8") as f:
+        f.write('"""\n自动生成的禅道API数据模型\n"""\n')
+        f.write('from .base import ZentaoModel\n')
+        for name in sorted(model_names):
+            f.write(f"from .{name.lower()} import {name}\n")
+        f.write("\n__all__ = [\n")
+        f.write("    'ZentaoModel',\n")
+        for name in sorted(model_names):
+            f.write(f"    '{name}',\n")
+        f.write("]\n")
 
-    # 生成 API __init__.py
-    with open(api_dir / "__init__.py", 'w', encoding='utf-8') as f:
-        f.write('"""\nGenerated API classes for ZenTao API\n"""\n')
-        f.write('from typing import Dict, Any, List, Optional\n')
-        f.write('from ..client import ZentaoClient\n')
-        f.write('from ..models import *\n')
-        f.write('from .base import BaseAPI\n\n')
-        for group_name in api_docs.get('groups', {}):
-            if group_name:
-                f.write(f'from .{group_name.lower()} import {group_name.capitalize()}API\n')
-        f.write('\n__all__ = [\n')
-        for group_name in api_docs.get('groups', {}):
-            if group_name:
-                f.write(f"    '{group_name.capitalize()}API',\n")
-        f.write(']\n')
+    # 生成 API 类
+    groups = {}
+    for path, item in paths.items():
+        for method, meta in item.items():
+            if method.lower() not in ["get", "post", "put", "delete", "patch"]:
+                continue
+            tags = meta.get("tags", [])
+            if not tags:
+                continue  # 没有tags的接口忽略
+            tag = tags[0]
+            groups.setdefault(tag, []).append((path, method.upper(), meta))
 
-def generate_base_files(core_dir: Path) -> None:
-    """生成基础文件"""
-    # 生成 base.py
-    base_file = core_dir / "api" / "base.py"
-    with open(base_file, 'w', encoding='utf-8') as f:
-        f.write('''"""
-Generated base API class for ZenTao API
+    print(f"发现 {len(groups)} 个API分组，开始生成API类...")
+    api_class_names = []
+    for tag, endpoints in groups.items():
+        class_name = f"{tag.capitalize()}API"
+        print(f"生成API类: {class_name}")
+        api_class_names.append(class_name)
+        code = generate_api_class_code(class_name, endpoints)
+        with open(api_dir / f"{tag.lower()}.py", "w", encoding="utf-8") as f:
+            f.write(code)
+
+    # 生成 api/__init__.py
+    print("生成 api/__init__.py ...")
+    with open(api_dir / "__init__.py", "w", encoding="utf-8") as f:
+        f.write('"""\n自动生成的禅道API接口类\n"""\n')
+        f.write('from .base import BaseAPI\n')
+        for cls in sorted(api_class_names):
+            f.write(f"from .{cls[:-3].lower()} import {cls}\n")
+        f.write("\n__all__ = [\n")
+        f.write("    'BaseAPI',\n")
+        for cls in sorted(api_class_names):
+            f.write(f"    '{cls}',\n")
+        f.write("]\n")
+
+    print("SDK代码生成完成。")
+
+def generate_base_model(models_dir: Path):
+    code = '''"""
+ZentaoModel 基类
 """
+from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional
+from datetime import datetime, date
+
+@dataclass
+class ZentaoModel:
+    """禅道API数据模型基类，支持序列化和反序列化"""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ZentaoModel':
+        return cls(**data)
+'''
+    with open(models_dir / "base.py", "w", encoding="utf-8") as f:
+        f.write(code)
+
+def generate_base_api(api_dir: Path):
+    code = '''"""
+BaseAPI 基类
+"""
+from typing import Dict, Any, Optional
 from ..client import ZentaoClient
 
 class BaseAPI:
-    """ZenTao API 基类"""
-    
+    """禅道API接口基类，封装异步请求逻辑"""
+
     def __init__(self, client: ZentaoClient):
-        """初始化 API 类
-        
-        Args:
-            client: ZentaoClient 实例
-        """
         self.client = client
-    
+
     async def _request(
         self,
         method: str,
         path: str,
-        path_params: Dict[str, Any] = None,
-        query_params: Dict[str, Any] = None,
-        body: Dict[str, Any] = None
-    ) -> Dict[str, Any]:
-        """发送 HTTP 请求
-        
-        Args:
-            method: HTTP 方法
-            path: API 路径
-            path_params: 路径参数
-            query_params: 查询参数
-            body: 请求体
-            
-        Returns:
-            Dict[str, Any]: API 响应数据
-        """
+        path_params: Optional[Dict[str, Any]] = None,
+        query_params: Optional[Dict[str, Any]] = None,
+        body: Optional[Dict[str, Any]] = None
+    ) -> Any:
         return await self.client._request(
             method=method,
             path=path,
@@ -258,212 +147,199 @@ class BaseAPI:
             query_params=query_params,
             body=body
         )
-''')
-
-    # 生成 models/base.py
-    base_model_file = core_dir / "models" / "base.py"
-    with open(base_model_file, 'w', encoding='utf-8') as f:
-        f.write('''"""
-Generated base model class for ZenTao API
-"""
-from typing import Dict, Any, List, Optional
-from datetime import datetime, date
-from dataclasses import dataclass, field
-
-@dataclass
-class ZentaoModel:
-    """ZenTao API 模型基类"""
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典
-        
-        Returns:
-            Dict[str, Any]: 字典数据
-        """
-        return {k: v for k, v in self.__dict__.items() if v is not None}
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ZentaoModel':
-        """从字典创建实例
-        
-        Args:
-            data: 字典数据
-            
-        Returns:
-            ZentaoModel: 模型实例
-        """
-        return cls(**data)
-''')
-
-    # 生成 models/response.py
-    response_file = core_dir / "models" / "response.py"
-    with open(response_file, 'w', encoding='utf-8') as f:
-        f.write('''"""
-Generated response model class for ZenTao API
-"""
-from typing import Dict, Any, List, Optional
-from .base import ZentaoModel
-
-class Response(ZentaoModel):
-    """ZenTao API 响应基类"""
-    
-    def __init__(self, **kwargs):
-        """初始化响应类
-        
-        Args:
-            **kwargs: 响应数据
-        """
-        super().__init__(**kwargs)
-''')
-
-def generate_api_class(api_name: str, api_methods: List[Dict[str, Any]], model_classes: Set[str]) -> str:
-    """生成 API 类代码"""
-    class_name = f"{api_name.capitalize()}API"
-
-    class_code = f'''"""
-Generated API class for {api_name}
-"""
-from typing import Dict, Any, List, Optional
-from ..client import ZentaoClient
-from ..models import *
-from .base import BaseAPI
-
-class {class_name}(BaseAPI):
-    """{api_name} API 类"""
-    
-    def __init__(self, client: ZentaoClient):
-        """初始化 {api_name} API
-        
-        Args:
-            client: ZentaoClient 实例
-        """
-        super().__init__(client)
-
 '''
+    with open(api_dir / "base.py", "w", encoding="utf-8") as f:
+        f.write(code)
 
-    # 生成方法代码
-    for method_info in api_methods:
-        method_code = generate_api_method(method_info)
-        class_code += method_code
+def generate_model_code(name: str, schema: Dict[str, Any], schemas: Dict[str, Any], model_names: Set[str]) -> str:
+    model_names.add(name)
+    required = schema.get("required", [])
+    props = schema.get("properties", {})
 
-    return class_code
+    lines = [
+        '"""',
+        f"{name} 数据模型",
+        '"""',
+        "from dataclasses import dataclass, field",
+        "from typing import Optional, List, Dict, Any",
+        "from datetime import datetime, date",
+        "from .base import ZentaoModel",
+        "",
+        "@dataclass",
+        f"class {name}(ZentaoModel):",
+        f'    """{name}"""'
+    ]
 
-def generate_api_method(method_info: Dict[str, Any]) -> str:
-    """生成 API 方法代码"""
-    method = method_info.get('method', '')
-    path = method_info.get('path', '')
-    description = method_info.get('description', '')
-    request_params = method_info.get('request_params', [])
+    if not props:
+        lines.append("    pass")
+        return "\n".join(lines)
 
-    # 生成方法名
-    method_name = path.strip('/').split('/')[-1]
-    if method_name == 'id':
-        parts = path.strip('/').split('/')
-        if len(parts) > 2:
-            method_name = f"{parts[-2]}_{method_name}"
-        if method.lower() == 'get':
-            method_name = f"get_{method_name}"
-        elif method.lower() == 'post':
-            method_name = f"create_{method_name}"
-        elif method.lower() == 'put':
-            method_name = f"update_{method_name}"
-        elif method.lower() == 'delete':
-            method_name = f"delete_{method_name}"
-
-    response_class = f"{path.strip('/').replace('/', '_').capitalize()}Response"
-
-    params = []
-    path_params = []
-    query_params = []
-    body_params = []
-
-    for param in request_params:
-        param_name = param.get('name', '')
-        param_type = param.get('type', '').lower()
-        required = param.get('required', False)
-        description = param.get('description', '')
-
-        if param_name == 'Token':
-            continue
-
-        if param_type == 'string':
-            param_type = 'str'
-        elif param_type == 'integer':
-            param_type = 'int'
-        elif param_type == 'boolean':
-            param_type = 'bool'
-        elif param_type == 'array':
-            param_type = 'List[Any]'
-        elif param_type == '':
-            param_type = 'Any'
-
-        if not required:
-            param_type = f'Optional[{param_type}]'
-            default_value = ' = None'
+    for prop, info in props.items():
+        typ = "Any"
+        if "$ref" in info:
+            ref_name = info["$ref"].split("/")[-1]
+            typ = ref_name
+            # 递归生成引用的模型
+            if ref_name not in model_names and ref_name in schemas:
+                nested_code = generate_model_code(ref_name, schemas[ref_name], schemas, model_names)
+                with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{ref_name.lower()}.py", "w", encoding="utf-8") as f:
+                    f.write(nested_code)
         else:
-            default_value = ''
+            t = info.get("type", "string")
+            if t == "string":
+                typ = "str"
+            elif t == "integer":
+                typ = "int"
+            elif t == "boolean":
+                typ = "bool"
+            elif t == "number":
+                typ = "float"
+            elif t == "array":
+                items = info.get("items", {})
+                if "$ref" in items:
+                    item_ref = items["$ref"].split("/")[-1]
+                    typ = f"List[{item_ref}]"
+                    # 递归生成
+                    if item_ref not in model_names and item_ref in schemas:
+                        nested_code = generate_model_code(item_ref, schemas[item_ref], schemas, model_names)
+                        with open(Path(__file__).parent.parent / "zentao_api/core/models" / f"{item_ref.lower()}.py", "w", encoding="utf-8") as f:
+                            f.write(nested_code)
+                else:
+                    item_type = items.get("type", "Any")
+                    if item_type == "string":
+                        typ = "List[str]"
+                    elif item_type == "integer":
+                        typ = "List[int]"
+                    elif item_type == "boolean":
+                        typ = "List[bool]"
+                    elif item_type == "number":
+                        typ = "List[float]"
+                    else:
+                        typ = "List[Any]"
+            else:
+                typ = "Any"
 
-        params.append(f"{param_name}: {param_type}{default_value}")
+        optional = prop not in required
+        default = " = None" if optional else ""
+        lines.append(f"    {prop}: Optional[{typ}]{default}")
 
-        if '{' + param_name + '}' in path:
-            path_params.append(param_name)
-        elif method.upper() in ['GET', 'DELETE']:
-            query_params.append(param_name)
+    return "\n".join(lines)
+
+def generate_api_class_code(class_name: str, endpoints: List):
+    model_imports = set()
+
+    lines = [
+        '"""',
+        f"{class_name} 自动生成的API接口类",
+        '"""',
+        "from .base import BaseAPI",
+        ""
+    ]
+
+    # 添加类定义
+    lines.append(f"class {class_name}(BaseAPI):")
+    lines.append(f'    """{class_name}"""')
+    lines.append("")
+
+    indent1 = "    "
+    indent2 = "        "
+    indent3 = "            "
+    indent4 = "                "
+
+    for path, method, meta in endpoints:
+        func_name = meta.get("operationId") or path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
+        summary = meta.get("summary", "")
+        params = []
+        param_lines = []
+        path_params_list = []
+
+        # 处理参数
+        for param in meta.get("parameters", []):
+            pname = param.get("name")
+            if pname.lower() == "token":
+                continue  # 不生成Token参数
+            prequired = param.get("required", False)
+            ptype = "Any"
+            schema = param.get("schema", {})
+            t = schema.get("type", "string")
+            if t == "string":
+                ptype = "str"
+            elif t == "integer":
+                ptype = "int"
+            elif t == "boolean":
+                ptype = "bool"
+            elif t == "number":
+                ptype = "float"
+            else:
+                ptype = "Any"
+            default = "" if prequired else " = None"
+
+            # 路径参数
+            if param.get("in") == "path":
+                params.append(f"{pname}: {ptype}")
+                param_lines.append(f"{indent3}{pname}: 路径参数")
+                path_params_list.append(pname)
+            else:
+                params.append(f"{pname}: Optional[{ptype}]{default}")
+                param_lines.append(f"{indent3}{pname}: {param.get('description', '')}")
+
+        # 请求体参数
+        has_body = False
+        request_body = meta.get("requestBody", {})
+        content = request_body.get("content", {})
+        if "application/json" in content:
+            has_body = True
+            schema = content["application/json"].get("schema", {})
+            # 这里简单处理，复杂结构可扩展
+            params.append("body: Optional[Dict[str, Any]] = None")
+            param_lines.append(f"{indent3}body: 请求体参数")
+
+        # 推断返回类型
+        responses = meta.get("responses", {})
+        return_type = "Any"
+        if "200" in responses:
+            resp = responses["200"]
+            content = resp.get("content", {})
+            if "application/json" in content:
+                schema = content["application/json"].get("schema", {})
+                if "$ref" in schema:
+                    return_type = schema["$ref"].split("/")[-1]
+                    model_imports.add(return_type)
+
+        param_str = ", ".join(params)
+        lines.append(f"{indent1}async def {func_name}(self, {param_str}) -> {return_type}:")
+        lines.append(f'{indent2}"""{summary}')
+        lines.append("")
+        lines.append(f"{indent2}Args:")
+        lines.extend(param_lines)
+        lines.append("")
+        lines.append(f"{indent2}Returns:")
+        lines.append(f"{indent3}{return_type} 响应模型")
+        lines.append(f'{indent2}"""')
+        lines.append(f"{indent2}return await self._request(")
+        lines.append(f'{indent3}method="{method}",')
+        lines.append(f'{indent3}path=f"{path}",')
+        # 生成path_params字典
+        if path_params_list:
+            lines.append(f"{indent3}path_params={{")
+            for pname in path_params_list:
+                lines.append(f'{indent4}"{pname}": {pname},')
+            lines.append(f"{indent3}}},")
         else:
-            body_params.append(param_name)
+            lines.append(f"{indent3}path_params=None,")
+        lines.append(f"{indent3}query_params=None,")
+        if has_body:
+            lines.append(f"{indent3}body=body")
+        else:
+            lines.append(f"{indent3}body=None")
+        lines.append(f"{indent2})\n")
 
-    if 'id' in path and '{id}' not in path:
-        path = path.replace('/id', '/{id}')
-        params.append('id: int')
-        path_params.append('id')
+    # 在顶部添加只import用到的模型
+    if model_imports:
+        import_line = "from ..models import " + ", ".join(sorted(model_imports))
+        lines.insert(4, import_line)
 
-    method_code = f'''    async def {method_name}(self, {", ".join(params)}) -> {response_class}:
-        """{description}
-        
-        Args:
-'''
-    for param in request_params:
-        param_name = param.get('name', '')
-        param_desc = param.get('description', '')
-        if param_name != 'Token':
-            method_code += f'            {param_name}: {param_desc}\n'
-
-    if 'id' in path and '{id}' in path and 'id: int' in params:
-        method_code += '            id: 记录 ID\n'
-
-    method_code += f'''        
-        Returns:
-            {response_class}: API 响应数据
-        """
-        path_params = {{
-'''
-    for param in path_params:
-        method_code += f'            "{param}": {param},\n'
-
-    method_code += '''        }
-        query_params = {
-'''
-    for param in query_params:
-        method_code += f'            "{param}": {param} if {param} is not None else None,\n'
-
-    method_code += '''        }
-        body = {
-'''
-    for param in body_params:
-        method_code += f'            "{param}": {param} if {param} is not None else None,\n'
-
-    method_code += f'''        }}
-        response = await self._request(
-            method="{method}",
-            path="{path}",
-            path_params=path_params,
-            query_params=query_params,
-            body=body
-        )
-        return {response_class}(**response) if isinstance(response, dict) else response
-'''
-
-    return method_code
+    return "\n".join(lines)
 
 if __name__ == "__main__":
     main()

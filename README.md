@@ -24,7 +24,7 @@ zentao_api_proj/
 │   ├── zentao_api_docs.json   # 禅道API描述文件
 │   ├── zentao-gen             # SDK生成工具脚本
 │   ├── generate_sdk.py        # SDK生成核心逻辑
-│   └── openapi_generated.yaml # OpenAPI格式的API文档
+│   └── zentao_api_docs.yaml   # OpenAPI格式的API文档（生成方法参考：https://github.com/williamxhero/zentao_api_doc.git）
 │
 ├── zentao_api/                # 生成的SDK代码
 │   ├── core/                  # 核心实现
